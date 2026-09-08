@@ -13,6 +13,7 @@ import json
 import os
 import threading
 import time
+import traceback
 import urllib.parse
 from collections.abc import Callable
 from textwrap import dedent
@@ -20,8 +21,6 @@ from textwrap import dedent
 import psycopg
 import requests
 from psycopg import Connection, Cursor
-from psycopg.errors import IdleInTransactionSessionTimeout, OperationalError
-from requests.exceptions import ConnectionError, ReadTimeout
 
 from materialize.cloudtest.util.jwt_key import fetch_jwt
 from materialize.mz_env_util import (
@@ -65,6 +64,21 @@ CONNECTION_ERROR_STRINGS = [
 
 def is_connection_error(msg: str) -> bool:
     return any(s in msg for s in CONNECTION_ERROR_STRINGS)
+
+
+def failure_messages(e: Exception) -> list[tuple[str, str | None]]:
+    """Every (message, details) pair an exception escaping a chunk stands for.
+
+    A FailedTestExecutionError carries one per testdrive error; anything else
+    is one entry, with the traceback as details for exception types the test
+    did not anticipate.
+    """
+    if isinstance(e, FailedTestExecutionError):
+        assert len(e.errors) > 0, "Exception contains no errors"
+        return [(error.message, error.details) for error in e.errors]
+    if isinstance(e, CommandFailureCausedUIError):
+        return [((e.stdout or "") + (e.stderr or ""), None)]
+    return [(f"{type(e).__name__}: {e}", traceback.format_exc())]
 
 
 class WebhookSender:
@@ -197,58 +211,32 @@ def workflow_default(c: Composition, parser: WorkflowArgumentParser) -> None:
                     )
                     close_connection_and_cursor(conn2, cursor_on_mv, "subscribe_mv")
 
-                except (
-                    OperationalError,
-                    ReadTimeout,
-                    ConnectionError,
-                    IdleInTransactionSessionTimeout,
-                ) as e:
-                    error_msg_str = str(e)
-                    if is_connection_error(error_msg_str):
+                except Exception as e:
+                    # Whatever escaped the chunk, the run keeps going: a
+                    # connection error restarts the chunk and stays out of the
+                    # verdict, anything else is collected and rethrown at the
+                    # end. Nothing aborts the run any more; an abort used to
+                    # skip the rethrow below and lose every failure collected
+                    # before it.
+                    for message, details in failure_messages(e):
+                        # TODO(def-): Remove when database-issues#6825 is fixed
+                        if "Non-positive multiplicity in DistinctBy" in message:
+                            continue
                         now = datetime.datetime.now(
                             tz=datetime.timezone.utc
                         ).isoformat()
-                        connection_failures.append((now, error_msg_str))
-                        print(f"Connection failure at {now}: {e}; retrying")
-                    else:
-                        raise
-                except FailedTestExecutionError as e:
-                    assert len(e.errors) > 0, "Exception contains no errors"
-                    for error in e.errors:
-                        # TODO(def-): Remove when database-issues#6825 is fixed
-                        if "Non-positive multiplicity in DistinctBy" in error.message:
-                            continue
-                        if is_connection_error(error.message):
-                            now = datetime.datetime.now(
-                                tz=datetime.timezone.utc
-                            ).isoformat()
-                            connection_failures.append((now, error.message))
+                        if is_connection_error(message):
+                            connection_failures.append((now, message))
                             print(
-                                f"Connection failure at {now}: {error.message}; continuing."
+                                f"Connection failure at {now}: {message}; restarting chunk."
                             )
                             continue
                         print(
-                            f"Test failure occurred ({error.message}), collecting it, and continuing."
+                            f"Test failure occurred ({message}), collecting it, and continuing."
                         )
-                        # collect, continue, and rethrow at the end
-                        failures.append(error)
-                except CommandFailureCausedUIError as e:
-                    msg = (e.stdout or "") + (e.stderr or "")
-                    # TODO(def-): Remove when database-issues#6825 is fixed
-                    if "Non-positive multiplicity in DistinctBy" in msg:
-                        continue
-                    if is_connection_error(msg):
-                        now = datetime.datetime.now(
-                            tz=datetime.timezone.utc
-                        ).isoformat()
-                        connection_failures.append((now, msg))
-                        print(f"Connection failure at {now}: {msg}; continuing.")
-                        continue
-                    print(
-                        f"Test failure occurred ({msg}), collecting it, and continuing."
-                    )
-                    # collect, continue, and rethrow at the end
-                    failures.append(TestFailureDetails(message=msg, details=None))
+                        failures.append(
+                            TestFailureDetails(message=message, details=details)
+                        )
         finally:
             webhook_sender.stop()
 
