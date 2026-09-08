@@ -56,6 +56,10 @@ CONNECTION_ERROR_STRINGS = [
     "consuming input failed: SSL SYSCALL error: EOF detected",
     "unexpected eof while reading",
     "consuming input failed: SSL connection has been closed unexpectedly",
+    # The agent's resolver, not the environment: seen as
+    # `NameResolutionError(... [Errno -3] Temporary failure in name resolution)`
+    # wrapped in a requests.ConnectionError.
+    "Temporary failure in name resolution",
 ]
 
 
