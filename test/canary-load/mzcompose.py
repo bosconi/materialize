@@ -278,6 +278,20 @@ def fetch_token(user_name: str, password: str) -> str:
     )
 
 
+def http_status_failure(
+    status_code: int, text: str, query: str
+) -> FailedTestExecutionError:
+    return FailedTestExecutionError(
+        error_summary="HTTP SQL query failed",
+        errors=[
+            TestFailureDetails(
+                message=f"HTTP {status_code} from /api/sql: {text.strip()}",
+                details=f"Occurred at {datetime.datetime.now()}. Query: {query}",
+            )
+        ],
+    )
+
+
 def http_sql_query(
     host: str,
     query: str,
@@ -306,7 +320,15 @@ def http_sql_query(
         print("Got 401, refreshing token and retrying")
         new_token = refresh_token()
         return http_sql_query(host, query, new_token, retries, refresh_token=None)
-    assert r.status_code == 200, f"{r}\n{r.text}"
+    if r.status_code >= 500 and retries > 0:
+        # The balancer answers 502 "upstream server not available" while
+        # environmentd restarts, e.g. during a version cutover. Give it a
+        # moment; a persistent 5xx is a collected failure, not an abort.
+        print(f"Got {r.status_code}, retrying in 5s: {r.text.strip()}")
+        time.sleep(5)
+        return http_sql_query(host, query, token, retries - 1, refresh_token)
+    if r.status_code != 200:
+        raise http_status_failure(r.status_code, r.text, query)
     results = r.json()["results"]
     assert len(results) == 1, results
 
