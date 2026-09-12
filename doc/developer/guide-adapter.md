@@ -221,8 +221,17 @@ every secret reachable through those connections, including connections with no
 active source or sink. Route ownership alone does not delegate authority over
 dependent credentials. This check precedes secret reads and validation and runs
 again before persistence, because dependents and grants can change during
-external validation. Dependency traversal uses the altered connection's final
-definition so removing an inaccessible dependency remains possible.
+external validation. Authorization covers the altered connection's own final
+definition, so removing an inaccessible dependency remains possible, but the
+walk does not descend through it. Descending would require `USAGE` on secrets
+held by the caller's own dependency connections, which is exactly what the
+delegation rule above grants without.
+
+`ALTER CONNECTION ... ROTATE KEYS` is deliberately outside this check. Rotating
+a tunnel's key pair does not point dependent connections at a new endpoint, so
+ownership remains sufficient. Note that `DROP ... CASCADE` is likewise
+unrestricted: a route owner cannot redirect a dependent's credentials but can
+still destroy the dependent. The boundary is confidentiality, not availability.
 
 ### The catalog is the source of truth for state that gets rebuilt from it
 

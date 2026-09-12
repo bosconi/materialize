@@ -3891,6 +3891,14 @@ impl Coordinator {
         // A route's own definition can contain no secrets even though changing
         // it redirects credentials in dependent connections. Include unused
         // connections because delegated validation can activate them later.
+        //
+        // `id` starts out visited so the walk never descends through the
+        // altered connection itself. Its final definition is already in
+        // `usage_ids`, and expanding it would demand USAGE on secrets that
+        // USAGE on a fixed connection deliberately delegates, which is a
+        // restriction on the caller's own connection rather than on the
+        // credentials this check exists to protect.
+        let mut visited = BTreeSet::from([id]);
         let mut pending: Vec<_> = catalog
             .item_dependents(id)
             .into_iter()
@@ -3901,21 +3909,12 @@ impl Coordinator {
                 _ => None,
             })
             .collect();
-        let mut visited = BTreeSet::new();
         while let Some(dependency_id) = pending.pop() {
             if !visited.insert(dependency_id) {
                 continue;
             }
-            let entry = self.catalog().get_entry(&dependency_id);
-            match entry.item() {
-                CatalogItem::Connection(conn) => {
-                    let conn = if dependency_id == id {
-                        connection
-                    } else {
-                        conn
-                    };
-                    pending.extend(conn.resolved_ids.items().copied());
-                }
+            match self.catalog().get_entry(&dependency_id).item() {
+                CatalogItem::Connection(conn) => pending.extend(conn.resolved_ids.items().copied()),
                 CatalogItem::Secret(_) => usage_ids.add_item(dependency_id),
                 _ => (),
             }

@@ -19,7 +19,12 @@ headless: true
 Owning a shared SSH tunnel or AWS PrivateLink connection does not grant authority
 to redirect credentials used by its dependent connections. A dependent connection
 whose secrets the route owner cannot use prevents that owner from altering route
-options. Grant the route administrator access to those secrets, have an authorized
-role alter the route, or remove the dependency before altering it. `USAGE` on an
-unchanged connection still permits `VALIDATE CONNECTION` without access to its
-secrets.
+options. To resolve that, have a role that can use those secrets alter the route,
+or remove the dependency first. Granting the route owner `USAGE` on the secrets
+also works, but it hands them the access this restriction exists to withhold, so
+prefer it only where that access is already intended.
+
+`USAGE` on an unchanged connection still permits `VALIDATE CONNECTION` without
+access to its secrets, and altering a connection never requires `USAGE` on
+secrets held by the connections it references, only on those its own definition
+names.
